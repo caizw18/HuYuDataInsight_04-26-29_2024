@@ -1,0 +1,123 @@
+---
+title: "HuYuDataInsight LLC Apr 26-29, 2024"
+author: "Zhaowei Cai"
+date: "2024-04-29"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+1-5
+```{r}
+library(quantmod)
+library(urca)
+library(forecast)
+library(tseries)
+library(fGarch)
+library(zoo)
+library(tseries)
+library(rugarch)
+library(ARDL)
+library(vars)
+library(stargazer)
+
+data = na.omit(read.csv('AAPL2.csv'))
+qqq = read.csv('QQQ2.csv')
+```
+1-5
+```{r}
+closing = na.omit(data$Close) # closing price
+log_closing = na.omit(log(data$Close)) # log closing price
+log_return = na.omit(diff(log(data$Close))) # log return
+time = as.Date(data$Date, format = '%m/%d/%y')
+
+##Check for the trend (the Augmented Dickey–Fuller (ADF) test)
+summary(ur.df(log_return, type='trend', lags=20, selectlags="BIC"))
+# No drift or time trend
+adf.test(log_return)
+# The data is stationary. Difference is not needed.
+
+##Check for the seasonality
+n = length(log_return)
+acf(log_return,main="ACF of the log return",yaxt="n")
+ci=qnorm(c(0.025, 0.975))/sqrt(n)
+text(y=ci,par("usr")[1],labels=round(ci,4),pos=2,xpd=TRUE)
+pacf(log_return,main="PACF of the log return",yaxt="n")
+text(y=ci,par("usr")[1],labels=round(ci,4),pos=2,xpd=TRUE)
+spec.pgram(log_return,main="Series: the log return")
+# we cannot find any evidence for seasonality. 
+
+# ARIMA
+fit = auto.arima(log_return, max.p=25, max.q=25, ic="bic",
+                       seasonal=F, lambda=NULL, 
+                       stepwise=FALSE, approximation=FALSE
+                       )
+summary(fit)
+# ARIMA(0,0,0)
+# AIC=-1378.2   AICc=-1378.18   BIC=-1374.68
+tsdiag(fit)
+shapiro.test(fit$residuals)
+# The null-hypothesis of this test is that the population is normally distributed. 
+# The null hypothesis is rejected and there is evidence that the residuals tested are not normally distributed. 
+
+# ARIMA-Garch
+arma_model <- fit
+garch_spec <- ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(1,1)),
+                         mean.model = list(armaOrder = c(0,0)))
+garch_fit <- ugarchfit(spec = garch_spec, data = arma_model$residuals)
+garch_fit
+# infocriteria(garch_fit)
+# ARIMA-GARCH would be more apt for modeling time series data with volatility clustering, which is a characteristic often seen in financial markets. The GARCH component would specifically model the changing volatility over time, leading to a more accurate representation of financial time series like stock returns.
+
+arma_model <- auto.arima(log_closing)
+arma_model # difference --> return
+garch_spec <- ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(1,1)),
+                         mean.model = list(armaOrder = c(0,0)))
+garch_fit <- ugarchfit(spec = garch_spec, data = arma_model$residuals)
+garch_fit
+forecasted_returns <- ugarchforecast(garch_fit, n.ahead = 1)
+last_close_price <- closing[length(closing)]
+(price_forecast <-as.numeric(last_close_price*exp(forecasted_returns@forecast$seriesFor)))
+(lower_interval <- as.numeric(price_forecast*exp(qnorm(0.025)*forecasted_returns@forecast$sigmaFor)))
+(upper_interval <- as.numeric(price_forecast*exp(qnorm(0.975)*forecasted_returns@forecast$sigmaFor)))
+# Print the forecasted closing price and prediction interval
+cat("1-day ahead closing price forecast:", price_forecast, "\n")
+cat("95% Prediction Interval: (", lower_interval, ", ", upper_interval, ")\n")
+# The true value 174.72 is inside the 95% CI.
+```
+6-10
+```{r}
+lc_AAPL = log_closing
+lc_QQQ = na.omit(log(qqq$Close))
+ardl_data = data.frame(cbind(lc_AAPL, lc_QQQ))
+ardl_model <- ardl(lc_AAPL~lc_QQQ, data = ardl_data, order = c(1,1))
+summary(ardl_model)
+# UECM (Unrestricted Error Correction Model)
+uecm_model <- uecm(ardl_model)
+summary(uecm_model)
+# RECM (Restricted Error Correction Model)
+recm_model <- recm(ardl_model, case = 2)
+summary(recm_model)
+# VAR
+VARselect(ardl_data, lag.max = 4, type = 'const')
+# estimation
+vare_diff = VAR(ardl_data, p = 1, type = 'const')
+summary(vare_diff)
+# residuals test
+serial.test(vare_diff)
+# forecast of differenced data
+varf_diff = predict(vare_diff, n.ahead = 1, ci = 0.95)
+exp(varf_diff$fcst$lc_AAPL)
+exp(varf_diff$fcst$lc_QQQ)
+# The true values 174.72 and 359.35 are inside the 95% CIs.
+
+# 5
+upper_interval-lower_interval # range
+abs(price_forecast-174.72) # error
+# 10
+exp(varf_diff$fcst$lc_AAPL)[3]-exp(varf_diff$fcst$lc_AAPL)[2] # range
+abs(exp(varf_diff$fcst$lc_AAPL)[1]-174.72) # error
+# The 95 CI of VAR(1) is narrower, but the prediction error of ARIMA-garch is lower
+# Both have their own advantages
+```
+
